@@ -3,15 +3,17 @@ import typing
 import logging
 import logging.config
 
+import networkx
+
 from utils import (Seq, SimpleGraph, TrueGraph, shortest_path, length_n_path,
-                   SolvedSeq, NodeKind, all_paths)
+                   SolvedSeq, NodeKind, all_paths, tg2digraph)
 
 
 def get_seq() -> Seq:
     return [0, 2, None, 5]
 
 
-def get_graph() -> TrueGraph:
+def get_graph() -> networkx.DiGraph:
     gr = {
         0: (NodeKind.PEEK_ALL, [1, 2]),
         1: (NodeKind.PEEK_ALL, [0, 3, 4]),
@@ -21,7 +23,7 @@ def get_graph() -> TrueGraph:
         5: (NodeKind.PEEK_ALL, [0]),
     }
 
-    return gr
+    return tg2digraph(gr)
 
 
 def split_seq(seq: Seq) -> typing.List[Seq]:
@@ -68,7 +70,7 @@ class PeekNeighboursAction(Action):
 
     def __init__(self, node: int, neighbour_nums: typing.Sequence[int]):
         super().__init__(node)
-        self.neighbour_nums = list(neighbour_nums)
+        self.neighbour_nums = set(neighbour_nums)
 
     def __str__(self):
         return (super(PeekNeighboursAction, self).__str__() +
@@ -87,9 +89,9 @@ class MoveAction(Action):
 
 
 class State:
-    def __init__(self, true_graph: TrueGraph):
+    def __init__(self, true_graph: networkx.DiGraph):
         self.log = logging.getLogger('State')
-        self.graph: TrueGraph = true_graph
+        self.graph: networkx.DiGraph = true_graph
         self.actions: typing.List[typing.Type[Action]] = []
 
     def _add_action(self, action: typing.Type[Action]):
@@ -99,7 +101,7 @@ class State:
     def move_agent(self, agent: Agent, neighbour_node: int):
         if agent.pos == neighbour_node:
             return
-        if neighbour_node not in self.graph[agent.pos][1]:
+        if neighbour_node not in self.graph[agent.pos]:
             raise ValueError(f'attempted to move from {agent.pos} to '
                              f'{neighbour_node} but it is not among neighbour '
                              f'nodes')
@@ -107,10 +109,12 @@ class State:
         for a in reversed(self.actions):
             if a.node == agent.pos:
                 if a.ACTION == PeekNeighboursAction.ACTION:
-                    peeked_neighbours = {
-                        self.graph[agent.pos][1][i] for i
-                        in typing.cast(PeekNeighboursAction, a).neighbour_nums
-                    }
+                    peeked_neighbours = set()
+                    for _, nb, order in self.graph.edges(agent.pos,
+                                                         data='order'):
+                        if (order in typing.cast(PeekNeighboursAction,
+                                                 a).neighbour_nums):
+                            peeked_neighbours.add(nb)
                     if neighbour_node in peeked_neighbours:
                         peeked = True
                     else:
@@ -130,15 +134,15 @@ class State:
         # noinspection PyTypeChecker
         self._add_action(PeekNodeTypeAction(agent.pos))
 
-        agent.kinds[agent.pos] = self.graph[agent.pos][0]
-        if agent.pos not in agent.map:
-            agent.map[agent.pos] = [None] * len(self.graph[agent.pos][1])
+        agent.map.add_node(agent.pos,
+                           kind=self.graph.nodes[agent.pos]['kind'],
+                           n_num=self.graph.out_degree(agent.pos))
 
     def peek_all_neighbours(self, agent: Agent):
-        n = self.graph[agent.pos]
-        if n[0] != NodeKind.PEEK_ALL:
+        pos_kind = self.graph.nodes[agent.pos]['kind']
+        if pos_kind != NodeKind.PEEK_ALL:
             raise ValueError(f'attempted to peek all neighbours at node '
-                             f'{agent.pos} which is of kind {n[0].name}')
+                             f'{agent.pos} which is of kind {pos_kind.name}')
         for a in reversed(self.actions):
             if a.node == agent.pos:
                 if a.ACTION == PeekNeighboursAction.ACTION:
@@ -148,17 +152,18 @@ class State:
                 break
 
         # noinspection PyTypeChecker
-        self._add_action(PeekNeighboursAction(agent.pos, range(len(n[1]))))
-        for i, nb in enumerate(n[1]):
-            agent.map[agent.pos][i] = nb
+        self._add_action(PeekNeighboursAction(
+            agent.pos, range(self.graph.out_degree(agent.pos))))
+        for c, nb, o in self.graph.out_edges(agent.pos, data='order'):
+            agent.map.add_edge(c, nb, order=o)
         agent.peeked = True
 
     def peek_neighbour(self, agent: Agent, neighbour_no: int):
-        n = self.graph[agent.pos]
-        if n[0] not in (NodeKind.PEEK_ALL, NodeKind.PEEK_ONE):
+        pos_kind = self.graph.nodes[agent.pos]['kind']
+        if pos_kind not in (NodeKind.PEEK_ALL, NodeKind.PEEK_ONE):
             raise ValueError(f'attempted to peek neighbour no {neighbour_no} '
                              f'at node {agent.pos} which is of kind '
-                             f'{n[0].name}')
+                             f'{pos_kind.name}')
         for a in reversed(self.actions):
             if a.node == agent.pos:
                 if a.ACTION == PeekNeighboursAction.ACTION:
@@ -166,13 +171,18 @@ class State:
                                      f'{agent.pos}')
             else:
                 break
-        if not (0 <= neighbour_no < len(n[1])):
+        if not (0 <= neighbour_no < self.graph.out_degree(agent.pos)):
             raise ValueError(f'attempted to peek neighbour no {neighbour_no} '
-                             f'at node {agent.pos} but it has {len(n[1])} '
-                             f'neighbours')
+                             f'at node {agent.pos} but it has '
+                             f'{self.graph.out_degree(agent.pos)} neighbours')
         # noinspection PyTypeChecker
         self._add_action(PeekNeighboursAction(agent.pos, [neighbour_no]))
-        agent.map[agent.pos][neighbour_no] = n[1][neighbour_no]
+        neighbour = None
+        for _, v, o in self.graph.edges(agent.pos, data='order'):
+            if o == neighbour_no:
+                neighbour = v
+                break
+        agent.map.add_edge(agent.pos, neighbour, order=neighbour_no)
         agent.peeked = True
 
 
@@ -182,8 +192,7 @@ class Agent:
         assert seq[0] is not None
         self.seq = seq
         self.pos: int = seq[0]
-        self.map: SimpleGraph = dict()
-        self.kinds: typing.MutableMapping[int, NodeKind] = dict()
+        self.map: networkx.DiGraph = networkx.DiGraph()
         self.peeked: bool = False
 
     def __repr__(self):
@@ -270,10 +279,12 @@ class Agent:
                 typing.Optional[SolvedSeq]:
             self.log.info('%s|%s -> %s| within (%s, %s)',
                           '\t' * (lvl + 1), self.pos, _end, min_l, max_l)
-            if self.pos not in self.kinds:
+            if (self.pos not in self.map or
+                    self.map.nodes.data('kind')[self.pos] is None):
                 # peek node type if we don't know it
                 state.peek_node_type(self)
-            if not self.peeked and self.kinds[self.pos] == NodeKind.PEEK_ALL:
+            if (not self.peeked and
+                    self.map.nodes.data('kind')[self.pos] == NodeKind.PEEK_ALL):
                 # peek all neighbours if we can
                 state.peek_all_neighbours(self)
 
@@ -337,22 +348,25 @@ class Agent:
             # we are not at the end point and we are not too long
             # try one neighbour at a time and search the rest of the path from
             # there
-            for neighbour_no, neighbour in enumerate(self.map[pos]):
+            for _, neighbour, neighbour_no in self.map.edges(pos, data='order'):
                 self.log.info('%s|%s -> %s| (at %s) within (%s, %s) - trying '
-                              'neighbour no %s',
+                              'neighbour no %s: %s',
                               '\t' * (lvl + 1), pos, _end, self.pos, min_l,
-                              max_l, neighbour_no)
+                              max_l, neighbour_no, neighbour)
                 # we have to peek if we didn't already
                 # if we did but the node type is not PEEK_ALL, something's wrong
-                if self.peeked and self.kinds[self.pos] != NodeKind.PEEK_ALL:
+                if (self.peeked and
+                        self.map.nodes[self.pos]['kind'] != NodeKind.PEEK_ALL):
                     raise ValueError(f'node {self.pos} already peeked but is '
                                      f'not PEEK_ALL')
                 if not self.peeked:
                     state.peek_neighbour(self, neighbour_no)
+                    o2n = {o: nb for _, nb, o
+                           in self.map.edges(self.pos, data='order')}
                     # the neighbour should have been None or had not changed
                     assert (neighbour is None or
-                            neighbour == self.map[self.pos][neighbour_no])
-                    neighbour = self.map[self.pos][neighbour_no]
+                            neighbour == o2n[neighbour_no])
+                    neighbour = o2n[neighbour_no]
                 # move to the neighbour
                 state.move_agent(self, neighbour)
                 # add the neighbour to the path
@@ -415,10 +429,10 @@ class Agent:
         for n in path:
             state.peek_node_type(self)
             if not self.peeked:
-                if self.kinds[self.pos] == NodeKind.PEEK_ALL:
+                if self.map.nodes[self.pos]['kind'] == NodeKind.PEEK_ALL:
                     state.peek_all_neighbours(self)
-                elif self.kinds[self.pos] == NodeKind.PEEK_ONE:
-                    for i, nn in enumerate(self.map[self.pos]):
+                elif self.map.nodes[self.pos]['kind'] == NodeKind.PEEK_ONE:
+                    for _, nn, i in self.map.edges(self.pos, data='order'):
                         if nn == n:
                             state.peek_neighbour(self, i)
                             break
@@ -427,13 +441,13 @@ class Agent:
 
 def main():
     graph = get_graph()
-    # seq = get_seq()
-    # agent = Agent(seq)
-    # state = State(graph)
-    # solved_seq = agent.solve(state)
-    # print(solved_seq)
-    for p in all_paths(graph, 0, 5):
-        print(p)
+    seq = get_seq()
+    agent = Agent(seq)
+    state = State(graph)
+    solved_seq = agent.solve(state)
+    print(solved_seq)
+    # for p in all_paths(graph, 0, 5):
+    #     print(p)
 
 
 if __name__ == '__main__':

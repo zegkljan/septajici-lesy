@@ -15,7 +15,7 @@ SimpleGraph = typing.MutableMapping[int, typing.List[typing.Optional[int]]]
 TrueGraph = typing.Mapping[int, typing.Tuple[NodeKind, typing.List[int]]]
 
 
-def shortest_path(graph: SimpleGraph, start: int, end: int) ->\
+def shortest_path(graph: networkx.DiGraph, start: int, end: int) ->\
         typing.Optional[typing.List[int]]:
     o = [start]
     c = set()
@@ -27,7 +27,7 @@ def shortest_path(graph: SimpleGraph, start: int, end: int) ->\
         c.add(n)
         if n == end:
             break
-        for n2 in graph.get(n, []):
+        for n2 in graph.adj.get(n, set()):
             if n2 is None:
                 continue
             o.append(n2)
@@ -45,8 +45,8 @@ def shortest_path(graph: SimpleGraph, start: int, end: int) ->\
     return path
 
 
-def length_n_path(graph: SimpleGraph, start: int, end: int, length: int) ->\
-        typing.Optional[typing.List[int]]:
+def length_n_path(graph: networkx.DiGraph, start: int, end: int,
+                  length: int) -> typing.Optional[typing.List[int]]:
     o = [[start]]
     path = None
     while o:
@@ -59,7 +59,7 @@ def length_n_path(graph: SimpleGraph, start: int, end: int, length: int) ->\
                 continue
         elif len(p) >= length:
             continue
-        for n2 in graph.get(p[-1], []):
+        for n2 in graph.adj.get(p[-1], set()):
             if n2 is None:
                 continue
             o.append(p + [n2])
@@ -71,17 +71,7 @@ def tg2digraph(tg: TrueGraph) -> networkx.DiGraph:
     for n, (k, _) in tg.items():
         g.add_node(n, kind=k)
     for n, (_, nbs) in tg.items():
-        g.add_edges_from([(n, nb) for nb in nbs])
-    return g
-
-
-def sg2digraph(sg: SimpleGraph) -> networkx.DiGraph:
-    g = networkx.DiGraph()
-    for n, nbs in sg.items():
-        g.add_node(n)
-        for i, nb in enumerate(nbs):
-            if nb is not None:
-                g.add_edge(n, nb, order=i)
+        g.add_edges_from([(n, nb, {'order': i}) for i, nb in enumerate(nbs)])
     return g
 
 
