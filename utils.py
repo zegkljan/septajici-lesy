@@ -2,6 +2,7 @@ import enum
 import typing
 
 import networkx as nx
+import numpy as np
 
 
 class NodeKind(enum.Enum):
@@ -83,3 +84,32 @@ def tg2digraph(tg: TrueGraph) -> nx.DiGraph:
 def all_paths(tg: TrueGraph, start: int, end: int) -> typing.Generator:
     g = tg2digraph(tg)
     return nx.shortest_simple_paths(g, start, end)
+
+
+def blank_seqs(seqs: typing.Sequence[SolvedSeq]) -> typing.Sequence[Seq]:
+    assert min(seqs, key=len) == max(seqs, key=len)
+    arr = np.array(seqs)
+    partitions = [np.arange(arr.shape[0])]
+    for i in range(1, len(seqs[0]) - 1):
+        point = arr[:, i]
+        partitions2 = []
+        for p in partitions:
+            unq = np.unique(point[p])
+            if len(unq) == 1:
+                point[p] = -1
+                partitions2.append(p)
+            else:
+                for u in unq:
+                    partitions2.append(p[np.where(point[p] == u)])
+        partitions = partitions2
+    blanked = []
+    for i in range(arr.shape[0]):
+        p = []
+        for j in arr[i, :]:
+            if j == -1:
+                p.append(None)
+            else:
+                p.append(j)
+        blanked.append(p)
+    blanked.sort(key=lambda p: len([1 for x in p if x is None]), reverse=True)
+    return blanked

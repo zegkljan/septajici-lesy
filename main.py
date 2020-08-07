@@ -9,24 +9,54 @@ import networkx
 from matplotlib.backends.backend_pdf import PdfPages
 
 from utils import (Seq, shortest_path, length_n_path,
-                   SolvedSeq, NodeKind, seq2str, confuse_seqs)
+                   SolvedSeq, NodeKind, seq2str, blank_seqs)
 
 
-def get_seq() -> Seq:
-    return [0, 2, None, 5]
+def get_seq(g: networkx.DiGraph) -> Seq:
+    paths = []
+    nodes = list(g.nodes)
+    for i in range(len(nodes)):
+        for j in range(i, len(nodes)):
+            u = nodes[i]
+            v = nodes[j]
+            paths.extend(networkx.all_simple_paths(g, u, v, len(g) // 2))
+    paths.sort()
+    paths.sort(key=len, reverse=True)
+    paths = list(filter(lambda p: len(p) == len(paths[0]), paths))
+    partitions = dict()
+    for p in paths:
+        pair = (p[0], p[-1])
+        if pair not in partitions:
+            partitions[pair] = []
+        partitions[pair].append(p)
+    partitions = list(partitions.values())
+    partitions.sort(key=len, reverse=True)
+    paths = partitions[0]
+    blanked = blank_seqs(paths)
+    #return [0, 2, None, 5]
+    return blanked[0]
 
 
 def get_graph() -> networkx.DiGraph:
-    gr = {
-        0: (NodeKind.PEEK_ALL, [1, 2]),
-        1: (NodeKind.PEEK_ALL, [0, 3, 4]),
-        2: (NodeKind.PEEK_ALL, [0, 3, 4]),
-        3: (NodeKind.PEEK_ALL, [0, 5]),
-        4: (NodeKind.PEEK_ALL, [0, 5]),
-        5: (NodeKind.PEEK_ALL, [0]),
-    }
+    # gr = {
+    #     0: (NodeKind.PEEK_ALL, [1, 2]),
+    #     1: (NodeKind.PEEK_ALL, [0, 3, 4]),
+    #     2: (NodeKind.PEEK_ALL, [0, 3, 4]),
+    #     3: (NodeKind.PEEK_ALL, [0, 5]),
+    #     4: (NodeKind.PEEK_ALL, [0, 5]),
+    #     5: (NodeKind.PEEK_ALL, [0]),
+    # }
+    # return tg2digraph(gr)
 
-    return tg2digraph(gr)
+    g = networkx.gnm_random_graph(20, 20 * 3, seed=0, directed=True)
+    for n in g:
+        if g.has_edge(n, n):
+            g.remove_edge(n, n)
+    for n in g:
+        g.add_node(n, kind=NodeKind.PEEK_ALL)
+        for i, nn in enumerate(g[n]):
+            g.edges[(n, nn)]['order'] = i
+    return g
 
 
 def split_seq(seq: Seq) -> typing.List[Seq]:
@@ -41,14 +71,13 @@ def split_seq(seq: Seq) -> typing.List[Seq]:
     return subseqs
 
 
-def join(seqs: typing.List[Seq]) -> Seq:
-    seq = []
-    for i, s in enumerate(seqs):
-        if i == 0:
-            seq.extend(s)
-        else:
-            seq.extend(s[1:])
-    return seq
+def join(seq1: Seq, seq2: Seq) -> Seq:
+    if seq1:
+        if seq2:
+            assert seq1[-1] == seq2[0]
+            return seq1 + seq2[1:]
+        return list(seq1)
+    return list(seq2)
 
 
 class Action:
@@ -152,12 +181,13 @@ class State:
             else:
                 break
 
-        for c, nb, o in self.graph.out_edges(agent.pos, data='order'):
+        ns = []
+        for c, nb, o in self.graph.edges(agent.pos, data='order'):
             agent.map.add_edge(c, nb, order=o)
+            ns.append(o)
         agent.peeked = True
         # noinspection PyTypeChecker
-        self._add_action(PeekNeighboursAction(
-            agent.pos, range(self.graph.out_degree(agent.pos))), agent)
+        self._add_action(PeekNeighboursAction(agent.pos, ns), agent)
 
     def peek_neighbour(self, agent: Agent, neighbour_no: int):
         pos_kind = self.graph.nodes[agent.pos]['kind']
@@ -244,36 +274,40 @@ class Agent:
     def solve(self, state: State):
         self.log.info('solving master sequence %s', seq2str(self.seq))
 
+        assert self.seq[0] == self.pos
+
         # always peek node type at the current position
         state.peek_node_type(self)
 
         # split sequence into subsequences that start and end with known nodes
         # and have only unknown nodes in between
         subseqs = split_seq(self.seq)
-        solved_subseqs = []
+        solved_seq = []
         for subseq in subseqs:
             # solve each simple sequence
             solved_subseq = self.solve_simple(subseq, state)
-            solved_subseqs.append(solved_subseq)
-        # join the subsequences
-        solved_seq = join(solved_subseqs)
+            solved_seq = join(solved_seq, solved_subseq)
 
         return solved_seq
 
     def solve_simple(self, simple_seq: Seq, state: State) -> typing.List[int]:
         self.log.info('solving simple sequence %s', seq2str(simple_seq))
-        if None not in simple_seq:
-            # sequence is already fully determined -> return
-            self.log.info('simple sequence %s already solved', simple_seq)
-            return simple_seq
 
-        # try to find path in map
-        path = self.search_path_in_map(simple_seq[0], simple_seq[-1],
-                                       len(simple_seq))
-        if path is None:
-            # there is no path in map -> find path by searching the true graph
-            path = self.search_path(simple_seq[0], simple_seq[-1],
-                                    len(simple_seq), state)
+        assert self.pos == simple_seq[0]
+
+        # search for the path
+        path = self.search_path(simple_seq[0], simple_seq[-1], len(simple_seq),
+                                len(simple_seq), state)
+
+        # move to the end point
+        # this may involve additional searching
+        move_stack = [[simple_seq[-1]]]
+        while self.pos != move_stack[-1][0]:
+            subpath = self.search_path(self.pos, simple_seq[-1], 0, 1024, state)
+            move_stack.append(subpath)
+        for subpath in reversed(move_stack[1:]):
+            self.move_along_path(subpath, state)
+
         self.log.info('solved simple sequence %s: %s', simple_seq, path)
         return path
 
@@ -290,10 +324,11 @@ class Agent:
                           start, end, length)
         return path
 
-    def search_path(self, start: int, end: int, length: int, state: State) ->\
-            SolvedSeq:
+    def search_path(self, start: int, end: int, min_length: int,
+                    max_length: int, state: State) -> SolvedSeq:
+        # TODO must search for SIMPLE paths
         self.log.info('searching for path from %s to %s of length %s in world',
-                      start, end, length)
+                      start, end, (min_length, max_length))
 
         # SEARCH for the path:
         #   1) is there a path of correct length in the map?
@@ -449,20 +484,13 @@ class Agent:
                           max_l)
             return None
 
-        # move to start point
-        if self.pos != start:
-            self.log.info('not at start point %s - searching path to start '
-                          'point', start)
-            path = search(start, 0, 1024, 0)
-            if path is None:
-                raise ValueError('cannot move to start point - no path exists')
-            self.log.info('moving to start point %s', start)
-            self.move_along_path(path, state)
+        # we have to be at start point
+        assert self.pos == start
 
-        subpath = search(end, length - 1, length - 1, 0)
+        subpath = search(end, min_length - 1, max_length - 1, 0)
         if subpath is None:
             raise ValueError(f'there is no path from {start} to {end} of '
-                             f'length {length}')
+                             f'length {(min_length, max_length)}')
         return [start] + subpath
 
     def move_along_path(self, path: typing.List[int], state: State):
