@@ -1,7 +1,7 @@
 import enum
 import typing
 
-import networkx
+import networkx as nx
 
 
 class NodeKind(enum.Enum):
@@ -15,7 +15,12 @@ SimpleGraph = typing.MutableMapping[int, typing.List[typing.Optional[int]]]
 TrueGraph = typing.Mapping[int, typing.Tuple[NodeKind, typing.List[int]]]
 
 
-def shortest_path(graph: networkx.DiGraph, start: int, end: int) ->\
+def seq2str(seq: Seq) -> str:
+    return '[{}]'.format(', '.join([str(n) if n is not None else '?'
+                                    for n in seq]))
+
+
+def shortest_path(graph: nx.DiGraph, start: int, end: int) ->\
         typing.Optional[typing.List[int]]:
     o = [start]
     c = set()
@@ -45,7 +50,7 @@ def shortest_path(graph: networkx.DiGraph, start: int, end: int) ->\
     return path
 
 
-def length_n_path(graph: networkx.DiGraph, start: int, end: int,
+def length_n_path(graph: nx.DiGraph, start: int, end: int,
                   length: int) -> typing.Optional[typing.List[int]]:
     o = [[start]]
     path = None
@@ -66,8 +71,8 @@ def length_n_path(graph: networkx.DiGraph, start: int, end: int,
     return path
 
 
-def tg2digraph(tg: TrueGraph) -> networkx.DiGraph:
-    g = networkx.DiGraph()
+def tg2digraph(tg: TrueGraph) -> nx.DiGraph:
+    g = nx.DiGraph()
     for n, (k, _) in tg.items():
         g.add_node(n, kind=k)
     for n, (_, nbs) in tg.items():
@@ -77,4 +82,4 @@ def tg2digraph(tg: TrueGraph) -> networkx.DiGraph:
 
 def all_paths(tg: TrueGraph, start: int, end: int) -> typing.Generator:
     g = tg2digraph(tg)
-    return networkx.shortest_simple_paths(g, start, end)
+    return nx.shortest_simple_paths(g, start, end)
