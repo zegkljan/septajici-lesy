@@ -205,7 +205,7 @@ class State:
             raise ValueError(f'attempted to peek neighbour no {neighbour_no} '
                              f'at node {agent.pos} which is of kind '
                              f'{pos_kind.name}')
-        for a, _ in reversed(self.actions):
+        for a, _, _ in reversed(self.actions):
             if a.node == agent.pos:
                 if a.ACTION == PeekNeighboursAction.ACTION:
                     raise ValueError(f'attempted multiple peeks at node '
@@ -241,16 +241,18 @@ class State:
             })
             fig.set_size_inches(10, 5)
             for a, m, ts in self.actions:
-                hnodes = {a.node}
-                hedges = set()
+                hnodes = {final_seq[0]: 'b',
+                          final_seq[-1]: 'g',
+                          a.node: 'r'}
+                hedges = dict()
                 if a.ACTION == 'MOVE':
-                    hnodes.add(a.to)
-                    hedges.add((a.node, a.to))
-                self.draw_graphs(self.graph, m, pos, ax1, ax2, hnodes, hedges,
-                                 'r', 'r', 'c', 'k')
+                    hnodes[a.to] = 'r'
+                    hedges[(a.node, a.to)] = 'r'
+                self.draw_graphs(self.graph, m, pos, ax1, ax2, 'c', 'k',
+                                 hnodes, hedges)
                 ax3.clear()
                 for i, t in enumerate(ts):
-                    ax3.text(0, 0.2 + 0.2 * i, t)
+                    ax3.text(0, 0.2 + 0.2 * i, t, fontsize=7) # max stack 7
                 ax3.set_ylim((0, max_task_stack))
                 ax3.tick_params(axis='x', which='both', bottom=False, top=False,
                                 labelbottom=False)
@@ -266,25 +268,45 @@ class State:
                 ax3.set_xlabel('task stack')
                 fig.suptitle('{}\n{}'.format(suptitle, str(a)))
                 p.savefig(fig)
-            hnodes = set(final_seq)
-            hedges = {e for e in zip(final_seq, final_seq[1:])}
-            self.draw_graphs(self.graph, m, pos, ax1, ax2, hnodes, hedges,
-                             'y', 'y', 'c', 'k')
+            hnodes = {final_seq[0]: 'b',
+                      final_seq[-1]: 'g'}
+            for n in final_seq[1:-1]:
+                hnodes[n] = 'y'
+            hedges = {e: 'y' for e in zip(final_seq, final_seq[1:])}
+            self.draw_graphs(self.graph, m, pos, ax1, ax2, 'c', 'k',
+                             hnodes, hedges)
             ax1.set_xlabel('whole graph')
             ax2.set_xlabel('agent map')
             ax3.set_xlabel('task stack')
             fig.suptitle('{}\nfinal path'.format(suptitle))
             p.savefig(fig)
 
-    def draw_graphs(self, g1, g2, pos, ax1, ax2, hn, he, hnc, hec, ncd, ecd):
-        nc1 = [hnc if n in hn else c
-               for n, c in g1.nodes(data='___', default=ncd)]
-        ec1 = [hec if (u, v) in he else c
-               for u, v, c in g1.edges(data='___', default=ecd)]
-        nc2 = [hnc if n in hn else c
-               for n, c in g2.nodes(data='___', default=ncd)]
-        ec2 = [hec if (u, v) in he else c
-               for u, v, c in g2.edges(data='___', default=ecd)]
+    def draw_graphs(self, g1, g2, pos, ax1, ax2, def_node_color, def_edge_color,
+                    node_highlights, edge_highlights):
+        nc1 = []
+        for n, c in g1.nodes(data='___', default=def_node_color):
+            if n in node_highlights:
+                nc1.append(node_highlights[n])
+            else:
+                nc1.append(c)
+        nc2 = []
+        for n, c in g2.nodes(data='___', default=def_node_color):
+            if n in node_highlights:
+                nc2.append(node_highlights[n])
+            else:
+                nc2.append(c)
+        ec1 = []
+        for u, v, c in g1.edges(data='___', default=def_edge_color):
+            if (u, v) in edge_highlights:
+                ec1.append(edge_highlights[(u, v)])
+            else:
+                ec1.append(c)
+        ec2 = []
+        for u, v, c in g2.edges(data='___', default=def_edge_color):
+            if (u, v) in edge_highlights:
+                ec2.append(edge_highlights[(u, v)])
+            else:
+                ec2.append(c)
         ax1.clear()
         ax2.clear()
         networkx.draw_networkx(g1, pos, ax=ax1, node_color=nc1, edge_color=ec1)
@@ -302,9 +324,10 @@ class Agent:
         self.map: networkx.DiGraph = networkx.DiGraph()
         self.peeked: bool = False
         self.task_stack: typing.List[str] = []
+        self.visited_nodes: typing.MutableSet[int] = set()
 
     def __repr__(self):
-        return f'pos: {self.pos}'
+        return f'pos: {self.pos}; visited: {self.visited_nodes}'
 
     def pop_task_stack(self, state: State):
         self.task_stack.pop()
@@ -343,14 +366,15 @@ class Agent:
         # search for the path
         assert self.pos == simple_seq[0]
         path = self.search_path(simple_seq[0], simple_seq[-1], len(simple_seq),
-                                len(simple_seq), state)
+                                len(simple_seq), True, state)
 
         # move to the end point
         # this may involve additional searching
         self.push_task_stack(state, f'move to {simple_seq[-1]}')
         move_stack = [[simple_seq[-1]]]
         while self.pos != move_stack[-1][0]:
-            subpath = self.search_path(self.pos, simple_seq[-1], 0, 1024, state)
+            subpath = self.search_path(self.pos, simple_seq[-1], 0, 1024, False,
+                                       state)
             move_stack.append(subpath)
         for subpath in reversed(move_stack[1:]):
             self.move_along_path(subpath, state)
@@ -358,6 +382,8 @@ class Agent:
 
         self.log.info('solved simple sequence %s: %s', simple_seq, path)
         self.pop_task_stack(state)
+        for n in path:
+            self.visited_nodes.add(n)
         return path
 
     def search_path_in_map(self, start: int, end: int, length: int) ->\
@@ -375,13 +401,14 @@ class Agent:
         return path
 
     def search_path(self, start: int, end: int, min_length: int,
-                    max_length: int, state: State) -> SolvedSeq:
+                    max_length: int, master_solve: bool,
+                    state: State) -> SolvedSeq:
         # we have to be at start point
         assert self.pos == start
 
         # TODO must search for SIMPLE paths
-        self.log.info('searching for path from %s to %s of length %s in world',
-                      start, end, (min_length, max_length))
+        self.log.info(f'searching for path from {start} to {end} of length '
+                      f'{(min_length, max_length)} in world')
 
         # SEARCH for the path:
         #   1) is there a path of correct length in the map?
@@ -404,12 +431,14 @@ class Agent:
         #   2) move along the path to previous node
 
         def search(_end: int, min_l: int, max_l: int, lvl: int,
-                   task: typing.Optional[str]=None) ->\
+                   master_solve: bool) ->\
                 typing.Optional[SolvedSeq]:
             self.log.info('%s|%s -> %s| within (%s, %s)',
                           '\t' * (lvl + 1), self.pos, _end, min_l, max_l)
             self.push_task_stack(
-                state, f'search {min_l} <= |{self.pos}->{_end}| <= {max_l}')
+                state,
+                f'search {min_l} <= |{self.pos}->{_end}| <= {max_l}'
+                f'{f" avoid {self.visited_nodes}" if master_solve else ""}')
             if (self.pos not in self.map or
                     self.map.nodes.data('kind')[self.pos] is None):
                 # peek node type if we don't know it
@@ -429,13 +458,21 @@ class Agent:
             self.log.info('%s|%s -> %s| within (%s, %s) - searching in map',
                           '\t' * (lvl + 1), self.pos, _end, min_l, max_l)
             p = None
-            if min_l == 0:
-                p = shortest_path(self.map, self.pos, _end)
+            if min_l <= 0:
+                if master_solve:
+                    p = shortest_path(self.map, self.pos, _end,
+                                      self.visited_nodes)
+                else:
+                    p = shortest_path(self.map, self.pos, _end, [])
                 if p is not None and len(p) - 1 <= max_l:
                     p = p[1:]
             else:
                 for l in range(min_l, max_l + 1):
-                    p = length_n_path(self.map, self.pos, _end, l + 1)
+                    if master_solve:
+                        p = length_n_path(self.map, self.pos, _end, l + 1,
+                                          self.visited_nodes)
+                    else:
+                        p = length_n_path(self.map, self.pos, _end, l + 1, [])
                     if p is not None:
                         p = p[1:]
                         break
@@ -485,10 +522,21 @@ class Agent:
             # try one neighbour at a time and search the rest of the path from
             # there
             for _, neighbour, neighbour_no in self.map.edges(pos, data='order'):
-                self.log.info('%s|%s -> %s| (at %s) within (%s, %s) - trying '
-                              'neighbour no %s: %s',
-                              '\t' * (lvl + 1), pos, _end, self.pos, min_l,
-                              max_l, neighbour_no, neighbour)
+                self.log.info(f'%s|{pos} -> {_end}| (at {self.pos}) within '
+                              f'{(min_l, max_l)} - trying neighbour no '
+                              f'{neighbour_no}: {neighbour}', '\t' * (lvl + 1))
+                if max_l <= 1 and neighbour != _end:
+                    self.log.info(f'%s|{pos} -> {_end}| (at {self.pos}) within '
+                                  f'{(min_l, max_l)} - neighbour no '
+                                  f'{neighbour_no}: {neighbour} is not the end '
+                                  f'and max length is only 1, skipping',
+                                  '\t' * (lvl + 1))
+                    continue
+                if master_solve and neighbour in self.visited_nodes:
+                    self.log.info(f'%s (at {self.pos}) neighbour no '
+                                  f'{neighbour_no}: {neighbour} already '
+                                  f'visited - skipping', '\t' * (lvl + 1))
+                    continue
                 # we have to peek if we didn't already
                 # if we did but the node type is not PEEK_ALL, something's wrong
                 if (self.peeked and
@@ -502,13 +550,15 @@ class Agent:
                     # the neighbour should have been None or had not changed
                     assert (neighbour is None or
                             neighbour == o2n[neighbour_no])
-                    neighbour = o2n[neighbour_no]
                 # move to the neighbour
                 state.move_agent(self, neighbour)
                 # add the neighbour to the path
                 p.append(neighbour)
+                if master_solve:
+                    self.visited_nodes.add(neighbour)
                 # find the rest of the path from the neighbour
-                subpath = search(_end, max(min_l - 1, 0), max_l - 1, lvl + 1)
+                subpath = search(_end, max(min_l - 1, 0), max_l - 1, lvl + 1,
+                                 master_solve)
                 # did we manage to find the path?
                 if subpath is None:
                     # we did not -> backtrack
@@ -518,15 +568,25 @@ class Agent:
                         '\t' * (lvl + 1), pos, _end, self.pos, min_l,
                         max_l, pos)
                     self.push_task_stack(state, f'backtrack to {pos}')
+                    if master_solve:
+                        self.visited_nodes.remove(neighbour)
 
                     # find path from where we are currently back to the previous
                     # node as there might not be a direct edge
                     # we don't care how long the path is so min length is 0 and
                     # max length is some ridiculously big number
-                    return_path = search(pos, 0, 2**10, lvl + 1)
+                    return_path = search(pos, 0, 2**10, lvl + 1, False)
 
                     if return_path is None:
                         raise ValueError('could not find return path')
+
+                    # the start of the return path should be a neighbour of the
+                    # current position or the current position should be on the
+                    # return path
+                    if return_path[0] not in self.map[self.pos]:
+                        while self.pos != return_path[0]:
+                            return_path.pop(0)
+                    assert len(return_path) > 0
 
                     # move along the return path
                     self.move_along_path(return_path, state)
@@ -549,7 +609,8 @@ class Agent:
             self.pop_task_stack(state)
             return None
 
-        subpath = search(end, max(0, min_length - 1), max_length - 1, 0)
+        subpath = search(end, max(0, min_length - 1), max_length - 1, 0,
+                         master_solve)
         if subpath is None:
             raise ValueError(f'there is no path from {start} to {end} of '
                              f'length {(min_length, max_length)}')
@@ -580,7 +641,7 @@ def main():
     state = State(graph)
     solved_seq = agent.solve(state)
     print(solved_seq)
-    state.generate_progress('/tmp/progress.pdf', solved_seq, seq2str(seq))
+    state.generate_progress('/tmp/solve.pdf', solved_seq, seq2str(seq))
 
 
 if __name__ == '__main__':

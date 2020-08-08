@@ -21,10 +21,11 @@ def seq2str(seq: Seq) -> str:
                                     for n in seq]))
 
 
-def shortest_path(graph: nx.DiGraph, start: int, end: int) ->\
+def shortest_path(graph: nx.DiGraph, start: int, end: int,
+                  avoid: typing.Collection[int]) ->\
         typing.Optional[typing.List[int]]:
     o = [start]
-    c = set()
+    c = set(avoid)
     rec = dict()
     while o:
         n = o.pop(0)
@@ -34,8 +35,6 @@ def shortest_path(graph: nx.DiGraph, start: int, end: int) ->\
         if n == end:
             break
         for n2 in graph.adj.get(n, set()):
-            if n2 is None:
-                continue
             o.append(n2)
             if n2 not in rec:
                 rec[n2] = n
@@ -52,7 +51,8 @@ def shortest_path(graph: nx.DiGraph, start: int, end: int) ->\
 
 
 def length_n_path(graph: nx.DiGraph, start: int, end: int,
-                  length: int) -> typing.Optional[typing.List[int]]:
+                  length: int, avoid: typing.Collection[int]) ->\
+        typing.Optional[typing.List[int]]:
     o = [[start]]
     path = None
     while o:
@@ -66,7 +66,7 @@ def length_n_path(graph: nx.DiGraph, start: int, end: int,
         elif len(p) >= length:
             continue
         for n2 in graph.adj.get(p[-1], set()):
-            if n2 is None:
+            if n2 in avoid or n2 in p:
                 continue
             o.append(p + [n2])
     return path
