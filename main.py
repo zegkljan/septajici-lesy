@@ -3,61 +3,24 @@ from __future__ import annotations
 import copy
 import logging
 import logging.config
+import multiprocessing
 import typing
 
 import matplotlib.pyplot as plt
-import networkx
+import networkx as nx
 from matplotlib.backends.backend_pdf import PdfPages
 
 from utils import (Seq, shortest_path, length_n_path,
-                   SolvedSeq, NodeKind, seq2str, blank_seqs)
+                   SolvedSeq, NodeKind, seq2str, generate_graph,
+                   find_sequences)
 
 
-def get_seq(g: networkx.DiGraph) -> Seq:
-    paths = []
-    nodes = list(g.nodes)
-    for i in range(len(nodes)):
-        for j in range(i, len(nodes)):
-            u = nodes[i]
-            v = nodes[j]
-            paths.extend(networkx.all_simple_paths(g, u, v, len(g) // 2))
-    paths.sort()
-    paths.sort(key=len, reverse=True)
-    paths = list(filter(lambda p: len(p) == len(paths[0]), paths))
-    partitions = dict()
-    for p in paths:
-        pair = (p[0], p[-1])
-        if pair not in partitions:
-            partitions[pair] = []
-        partitions[pair].append(p)
-    partitions = list(partitions.values())
-    partitions.sort(key=len, reverse=True)
-    paths = partitions[0]
-    blanked = blank_seqs(paths)
-    #return [0, 2, None, 5]
-    return blanked[0]
-
-
-def get_graph() -> networkx.DiGraph:
-    # gr = {
-    #     0: (NodeKind.PEEK_ALL, [1, 2]),
-    #     1: (NodeKind.PEEK_ALL, [0, 3, 4]),
-    #     2: (NodeKind.PEEK_ALL, [0, 3, 4]),
-    #     3: (NodeKind.PEEK_ALL, [0, 5]),
-    #     4: (NodeKind.PEEK_ALL, [0, 5]),
-    #     5: (NodeKind.PEEK_ALL, [0]),
-    # }
-    # return tg2digraph(gr)
-
-    g = networkx.gnm_random_graph(20, 20 * 3, seed=0, directed=True)
-    for n in g:
-        if g.has_edge(n, n):
-            g.remove_edge(n, n)
-    for n in g:
-        g.add_node(n, kind=NodeKind.PEEK_ALL)
-        for i, nn in enumerate(g[n]):
-            g.edges[(n, nn)]['order'] = i
-    return g
+def get_graph_sequences(no_of_sequences: int) ->\
+        typing.Tuple[nx.DiGraph,
+                     typing.List[typing.Tuple[Seq, SolvedSeq]]]:
+    g = generate_graph()
+    seqs = find_sequences(g, no_of_sequences)
+    return g, seqs
 
 
 def split_seq(seq: Seq) -> typing.List[Seq]:
@@ -129,11 +92,11 @@ class MoveAction(Action):
 
 
 class State:
-    def __init__(self, true_graph: networkx.DiGraph):
-        self.log = logging.getLogger('State')
-        self.graph: networkx.DiGraph = true_graph
+    def __init__(self, true_graph: nx.DiGraph, name: str = None):
+        self.log = logging.getLogger('State' if name is None else name)
+        self.graph: nx.DiGraph = true_graph
         self.actions: typing.List[typing.Tuple[typing.Type[Action],
-                                               networkx.DiGraph,
+                                               nx.DiGraph,
                                                typing.List[str]]] = []
 
     def _add_action(self, action: typing.Type[Action], agent: Agent):
@@ -231,6 +194,7 @@ class State:
         self._add_action(NoAction(agent.pos), agent)
 
     def generate_progress(self, outfile, final_seq: SolvedSeq, suptitle):
+        self.log.info('Creating PDF...')
         pos = dict(self.graph.nodes('pos'))
         max_task_stack = len(max(self.actions, key=lambda x: len(x[2]))[2])
         with PdfPages(outfile) as p:
@@ -240,7 +204,8 @@ class State:
                 'left': 0,
             })
             fig.set_size_inches(10, 5)
-            for a, m, ts in self.actions:
+            for i, (a, m, ts) in enumerate(self.actions):
+                self.log.info(f'... action {i}/{len(self.actions)}')
                 hnodes = {final_seq[0]: 'b',
                           final_seq[-1]: 'g',
                           a.node: 'r'}
@@ -251,9 +216,12 @@ class State:
                 self.draw_graphs(self.graph, m, pos, ax1, ax2, 'c', 'k',
                                  hnodes, hedges)
                 ax3.clear()
-                for i, t in enumerate(ts):
-                    ax3.text(0, 0.2 + 0.2 * i, t, fontsize=7) # max stack 7
-                ax3.set_ylim((0, max_task_stack))
+                for j, t in enumerate(ts):
+                    ax3.text(0, 0.2 + 0.4 * j, t,
+                             fontsize=6 * 20 / len(self.graph),
+                             horizontalalignment='left',
+                             verticalalignment='bottom')
+                ax3.set_ylim((0, 7))
                 ax3.tick_params(axis='x', which='both', bottom=False, top=False,
                                 labelbottom=False)
                 ax3.tick_params(axis='y', which='both', left=False, right=False,
@@ -268,6 +236,7 @@ class State:
                 ax3.set_xlabel('task stack')
                 fig.suptitle('{}\n{}'.format(suptitle, str(a)))
                 p.savefig(fig)
+            self.log.info(f'... final sequence')
             hnodes = {final_seq[0]: 'b',
                       final_seq[-1]: 'g'}
             for n in final_seq[1:-1]:
@@ -281,7 +250,8 @@ class State:
             fig.suptitle('{}\nfinal path'.format(suptitle))
             p.savefig(fig)
 
-    def draw_graphs(self, g1, g2, pos, ax1, ax2, def_node_color, def_edge_color,
+    @staticmethod
+    def draw_graphs(g1, g2, pos, ax1, ax2, def_node_color, def_edge_color,
                     node_highlights, edge_highlights):
         nc1 = []
         for n, c in g1.nodes(data='___', default=def_node_color):
@@ -309,19 +279,19 @@ class State:
                 ec2.append(c)
         ax1.clear()
         ax2.clear()
-        networkx.draw_networkx(g1, pos, ax=ax1, node_color=nc1, edge_color=ec1)
-        networkx.draw_networkx(g2, pos, ax=ax2, node_color=nc2, edge_color=ec2)
+        nx.draw_networkx(g1, pos, ax=ax1, node_color=nc1, edge_color=ec1)
+        nx.draw_networkx(g2, pos, ax=ax2, node_color=nc2, edge_color=ec2)
         ax2.set_xlim(ax1.get_xlim())
         ax2.set_ylim(ax1.get_ylim())
 
 
 class Agent:
-    def __init__(self, seq: Seq):
-        self.log = logging.getLogger('Agent')
+    def __init__(self, seq: Seq, name: str = None):
+        self.log = logging.getLogger('Agent' if name is None else name)
         assert seq[0] is not None
         self.seq = seq
         self.pos: int = seq[0]
-        self.map: networkx.DiGraph = networkx.DiGraph()
+        self.map: nx.DiGraph = nx.DiGraph()
         self.peeked: bool = False
         self.task_stack: typing.List[str] = []
         self.visited_nodes: typing.MutableSet[int] = set()
@@ -360,8 +330,6 @@ class Agent:
     def solve_simple(self, simple_seq: Seq, state: State) -> typing.List[int]:
         self.log.info('solving simple sequence %s', seq2str(simple_seq))
         self.push_task_stack(state, f'solve {seq2str(simple_seq)}')
-
-        assert self.pos == simple_seq[0]
 
         # search for the path
         assert self.pos == simple_seq[0]
@@ -431,14 +399,14 @@ class Agent:
         #   2) move along the path to previous node
 
         def search(_end: int, min_l: int, max_l: int, lvl: int,
-                   master_solve: bool) ->\
+                   current_visited: typing.Set[int]) ->\
                 typing.Optional[SolvedSeq]:
             self.log.info('%s|%s -> %s| within (%s, %s)',
                           '\t' * (lvl + 1), self.pos, _end, min_l, max_l)
             self.push_task_stack(
                 state,
-                f'search {min_l} <= |{self.pos}->{_end}| <= {max_l}'
-                f'{f" avoid {self.visited_nodes}" if master_solve else ""}')
+                f'search {min_l} <= |{self.pos}->{_end}| <= {max_l}\n'
+                f'  avoid {current_visited}')
             if (self.pos not in self.map or
                     self.map.nodes.data('kind')[self.pos] is None):
                 # peek node type if we don't know it
@@ -459,20 +427,14 @@ class Agent:
                           '\t' * (lvl + 1), self.pos, _end, min_l, max_l)
             p = None
             if min_l <= 0:
-                if master_solve:
-                    p = shortest_path(self.map, self.pos, _end,
-                                      self.visited_nodes)
-                else:
-                    p = shortest_path(self.map, self.pos, _end, [])
+                p = shortest_path(self.map, self.pos,
+                                  _end, current_visited.difference([self.pos]))
                 if p is not None and len(p) - 1 <= max_l:
                     p = p[1:]
             else:
                 for l in range(min_l, max_l + 1):
-                    if master_solve:
-                        p = length_n_path(self.map, self.pos, _end, l + 1,
-                                          self.visited_nodes)
-                    else:
-                        p = length_n_path(self.map, self.pos, _end, l + 1, [])
+                    p = length_n_path(self.map, self.pos, _end, l + 1,
+                                      current_visited)
                     if p is not None:
                         p = p[1:]
                         break
@@ -532,7 +494,7 @@ class Agent:
                                   f'and max length is only 1, skipping',
                                   '\t' * (lvl + 1))
                     continue
-                if master_solve and neighbour in self.visited_nodes:
+                if neighbour in current_visited:
                     self.log.info(f'%s (at {self.pos}) neighbour no '
                                   f'{neighbour_no}: {neighbour} already '
                                   f'visited - skipping', '\t' * (lvl + 1))
@@ -554,11 +516,10 @@ class Agent:
                 state.move_agent(self, neighbour)
                 # add the neighbour to the path
                 p.append(neighbour)
-                if master_solve:
-                    self.visited_nodes.add(neighbour)
+
                 # find the rest of the path from the neighbour
                 subpath = search(_end, max(min_l - 1, 0), max_l - 1, lvl + 1,
-                                 master_solve)
+                                 current_visited.union([neighbour]))
                 # did we manage to find the path?
                 if subpath is None:
                     # we did not -> backtrack
@@ -568,14 +529,12 @@ class Agent:
                         '\t' * (lvl + 1), pos, _end, self.pos, min_l,
                         max_l, pos)
                     self.push_task_stack(state, f'backtrack to {pos}')
-                    if master_solve:
-                        self.visited_nodes.remove(neighbour)
 
                     # find path from where we are currently back to the previous
                     # node as there might not be a direct edge
                     # we don't care how long the path is so min length is 0 and
                     # max length is some ridiculously big number
-                    return_path = search(pos, 0, 2**10, lvl + 1, False)
+                    return_path = search(pos, 0, 2 ** 10, lvl + 1, {self.pos})
 
                     if return_path is None:
                         raise ValueError('could not find return path')
@@ -609,8 +568,12 @@ class Agent:
             self.pop_task_stack(state)
             return None
 
+        if master_solve:
+            visited = set(self.visited_nodes)
+        else:
+            visited = set()
         subpath = search(end, max(0, min_length - 1), max_length - 1, 0,
-                         master_solve)
+                         visited)
         if subpath is None:
             raise ValueError(f'there is no path from {start} to {end} of '
                              f'length {(min_length, max_length)}')
@@ -632,16 +595,25 @@ class Agent:
         self.pop_task_stack(state)
 
 
-def main():
-    graph = get_graph()
-    for n, p in networkx.kamada_kawai_layout(graph).items():
-        graph.nodes[n]['pos'] = p
-    seq = get_seq(graph)
-    agent = Agent(seq)
-    state = State(graph)
+def solve(graph: nx.DiGraph, i: int, seq: Seq, correct: SolvedSeq):
+    agent = Agent(seq, f'Agent-{i}')
+    state = State(graph, f'State-{i}')
     solved_seq = agent.solve(state)
-    print(solved_seq)
-    state.generate_progress('/tmp/solve.pdf', solved_seq, seq2str(seq))
+    if solved_seq != correct:
+        raise ValueError(f'{i}: incorrect solve')
+    state.generate_progress(f'/tmp/solve_{i}.pdf', solved_seq, seq2str(seq))
+
+
+def main():
+    graph, sequences = get_graph_sequences(6)
+    for n, p in nx.kamada_kawai_layout(graph).items():
+        graph.nodes[n]['pos'] = p
+    with multiprocessing.Pool() as pool:
+        res = [pool.apply_async(solve, [graph, i, seq, correct])
+               for i, (seq, correct) in enumerate(sequences)]
+        for r in res:
+            r.wait()
+
 
 
 if __name__ == '__main__':
@@ -650,4 +622,6 @@ if __name__ == '__main__':
                '(%(funcName)s:%(lineno)s)',
         level=logging.DEBUG
     )
+    logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
+    logging.getLogger('matplotlib.backends.backend_pdf').setLevel(logging.INFO)
     main()
