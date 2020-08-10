@@ -4,22 +4,26 @@ import copy
 import logging
 import logging.config
 import multiprocessing
+import os
 import typing
 
 import matplotlib.pyplot as plt
 import networkx as nx
 from matplotlib.backends.backend_pdf import PdfPages
 
+import saving
 from utils import (Seq, shortest_path, length_n_path,
                    SolvedSeq, NodeKind, seq2str, generate_graph,
                    find_sequences)
 
 
-def get_graph_sequences(no_of_sequences: int) ->\
+def get_graph_sequences(graph_size: int, seq_min_len: int, seq_max_len: int,
+                        no_of_sequences: int,
+                        seed: typing.Optional[int] = None) ->\
         typing.Tuple[nx.DiGraph,
                      typing.List[typing.Tuple[Seq, SolvedSeq]]]:
-    g = generate_graph()
-    seqs = find_sequences(g, no_of_sequences)
+    g = generate_graph(graph_size, seed)
+    seqs = find_sequences(g, seq_min_len, seq_max_len, no_of_sequences)
     return g, seqs
 
 
@@ -595,25 +599,38 @@ class Agent:
         self.pop_task_stack(state)
 
 
-def solve(graph: nx.DiGraph, i: int, seq: Seq, correct: SolvedSeq):
+def solve(graph: nx.DiGraph, i: int, seq: Seq, correct: SolvedSeq,
+          savedir: str):
+    i = i + 1
+    savedir = os.path.join(savedir, 'simulations')
+    os.makedirs(savedir, exist_ok=True)
     agent = Agent(seq, f'Agent-{i}')
     state = State(graph, f'State-{i}')
     solved_seq = agent.solve(state)
     if solved_seq != correct:
         raise ValueError(f'{i}: incorrect solve')
-    state.generate_progress(f'/tmp/solve_{i}.pdf', solved_seq, seq2str(seq))
+    state.generate_progress(os.path.join(savedir, f'solve_{i}.pdf'),
+                            solved_seq, seq2str(seq))
 
 
 def main():
-    graph, sequences = get_graph_sequences(6)
+    savedir = '/tmp/lesy'
+    os.makedirs(savedir, exist_ok=True)
+
+    graph, sequences = get_graph_sequences(20, 6, 11, 20, 0)
     for n, p in nx.kamada_kawai_layout(graph).items():
         graph.nodes[n]['pos'] = p
-    with multiprocessing.Pool() as pool:
-        res = [pool.apply_async(solve, [graph, i, seq, correct])
-               for i, (seq, correct) in enumerate(sequences)]
-        for r in res:
-            r.wait()
-
+    saving.save_design(graph, sequences, savedir, 'symbols')
+    mp = True
+    if mp:
+        with multiprocessing.Pool() as pool:
+            res = [pool.apply_async(solve, [graph, i, seq, correct, savedir])
+                   for i, (seq, correct) in enumerate(sequences)]
+            for r in res:
+                r.wait()
+    else:
+        for i, (seq, correct) in enumerate(sequences):
+            solve(graph, i, seq, correct, savedir)
 
 
 if __name__ == '__main__':
@@ -624,4 +641,5 @@ if __name__ == '__main__':
     )
     logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
     logging.getLogger('matplotlib.backends.backend_pdf').setLevel(logging.INFO)
+    logging.getLogger('svglib.svglib').setLevel(logging.INFO)
     main()

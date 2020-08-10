@@ -2,6 +2,7 @@ import collections
 import enum
 import functools
 import random
+import time
 import typing
 
 import networkx as nx
@@ -19,6 +20,13 @@ SimpleGraph = typing.MutableMapping[int, typing.List[typing.Optional[int]]]
 TrueGraph = typing.Mapping[int, typing.Tuple[NodeKind, typing.List[int]]]
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
+
+
+class PathSetMetrics(typing.NamedTuple):
+    nones_count: int
+    pairwise_dists: int
+    min_none_sequence_len: int
+    nones_spread: float
 
 
 def seq2str(seq: Seq) -> str:
@@ -108,12 +116,14 @@ def length_n_path(graph: nx.DiGraph, start: int, end: int,
     return path
 
 
-def generate_graph() -> nx.DiGraph:
-    seed = 0
+def generate_graph(size: int, seed: typing.Optional[int] = None) -> nx.DiGraph:
+    if seed is None:
+        seed = int(time.time())
     random.seed(seed)
 
     # generate random graph
-    g = nx.fast_gnp_random_graph(20, 2 / 19, seed=seed, directed=True)
+    g = nx.fast_gnp_random_graph(size, 2.5 / (size - 1),
+                                 seed=seed, directed=True)
 
     # postprocess graph
 
@@ -186,6 +196,35 @@ def select_paths(all_paths: typing.List[typing.Tuple[Seq, SolvedSeq]],
     return sorted(all_paths, key=lambda x: x[0].count(None))[-no:]
 
 
+def compute_metrics(seq_set: typing.List[typing.Tuple[Seq, SolvedSeq]]) ->\
+        PathSetMetrics:
+    nones_count = sum([seq.count(None) for seq, _ in seq_set])
+    pairwise_dists = sum([seq_distance(a, b)
+                          for _, a in seq_set for _, b in seq_set])
+    min_none_sequence_len = max(map(lambda x: len(x[0]), seq_set))
+    for s, _ in seq_set:
+        cnt = 0
+        for e in s:
+            if e is not None:
+                if cnt > 0:
+                    min_none_sequence_len = min(min_none_sequence_len, cnt)
+                cnt = 0
+            else:
+                cnt += 1
+    nones_spread = 0
+    for s, _ in seq_set:
+        l = len(s)
+        positions = []
+        for i, e in enumerate(s):
+            if e is None:
+                positions.append(i / l)
+        nones_spread += np.var(positions)
+    return PathSetMetrics(nones_count=nones_count,
+                          pairwise_dists=pairwise_dists,
+                          min_none_sequence_len=min_none_sequence_len,
+                          nones_spread=nones_spread)
+
+
 def nd_sort(path_sets: typing.Iterable[
         typing.List[typing.Tuple[Seq, SolvedSeq]]]) ->\
         typing.List[
@@ -194,25 +233,22 @@ def nd_sort(path_sets: typing.Iterable[
                     typing.List[
                         typing.Tuple[Seq, SolvedSeq]
                     ],
-                    typing.Tuple[int, int]
+                    PathSetMetrics
                 ]
             ]
         ]:
-    def keys(x: typing.List[typing.Tuple[Seq, SolvedSeq]]) ->\
-            typing.Tuple[int, int]:
-        nones_count = sum([seq.count(None) for seq, _ in x])
-        pairwise_dist = sum([seq_distance(a, b) for _, a in x for _, b in x])
-        return nones_count, pairwise_dist
-    path_sets_keys = [(s, keys(s)) for s in path_sets]
+    path_sets_keys = [(s, compute_metrics(s)) for s in path_sets]
     fronts = [[]]
-    path_sets_keys.sort(key=lambda x: x[1], reverse=True)
+    path_sets_keys.sort(key=lambda x: (x[1].nones_spread, x[1].pairwise_dists),
+                        reverse=True)
     for p, pk in path_sets_keys:
         x = len(fronts)
         k = 0
         while True:
             dominated = False
             for pf, pfk in reversed(fronts[k]):
-                if all(map(lambda q: q[0] >= q[1], zip(pfk, pk))):
+                if (pfk.nones_spread >= pk.nones_spread and
+                        pfk.pairwise_dists >= pk.pairwise_dists):
                     dominated = True
                     break
             if not dominated:
@@ -226,16 +262,17 @@ def nd_sort(path_sets: typing.Iterable[
     return fronts
 
 
-def find_sequences(g: nx.DiGraph, seqs_no: int) ->\
+def find_sequences(g: nx.DiGraph, min_len: int, max_len: int, seqs_no: int) ->\
         typing.List[typing.Tuple[Seq, SolvedSeq]]:
+    max_len = min(len(g), max_len)
     all_paths = []
     nodes = list(g.nodes)
     for i in range(len(nodes)):
         for j in range(i, len(nodes)):
             u = nodes[i]
             v = nodes[j]
-            all_paths.extend(nx.all_simple_paths(g, u, v, round(len(g) * 2 / 3)))
-    all_paths = [p for p in all_paths if len(p) > len(g) * 1 / 3]
+            all_paths.extend(nx.all_simple_paths(g, u, v, max_len))
+    all_paths = [p for p in all_paths if len(p) >= min_len]
     by_length = partition(all_paths, len)
     blanked = []
     for paths in by_length.values():
@@ -254,4 +291,7 @@ def find_sequences(g: nx.DiGraph, seqs_no: int) ->\
         paths.extend(paths2)
     by_endpoints_sorted = nd_sort(by_endpoints.values())
     first_front = by_endpoints_sorted[0]
-    return first_front[-1][0]
+    first_front.sort(key=lambda x: x[1].pairwise_dists)
+    if len(first_front) >= 2:
+        return first_front[-2][0]
+    return first_front[0][0]
