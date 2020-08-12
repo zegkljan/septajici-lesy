@@ -12,19 +12,9 @@ import networkx as nx
 from matplotlib.backends.backend_pdf import PdfPages
 
 import saving
+import generation
 from utils import (Seq, shortest_path, length_n_path,
-                   SolvedSeq, NodeKind, seq2str, generate_graph,
-                   find_sequences)
-
-
-def get_graph_sequences(graph_size: int, seq_min_len: int, seq_max_len: int,
-                        no_of_sequences: int,
-                        seed: typing.Optional[int] = None) ->\
-        typing.Tuple[nx.DiGraph,
-                     typing.List[typing.Tuple[Seq, SolvedSeq]]]:
-    g = generate_graph(graph_size, seed)
-    seqs = find_sequences(g, seq_min_len, seq_max_len, no_of_sequences)
-    return g, seqs
+                   SolvedSeq, NodeKind, seq2str)
 
 
 def split_seq(seq: Seq) -> typing.List[Seq]:
@@ -617,7 +607,7 @@ def main():
     savedir = '/tmp/lesy'
     os.makedirs(savedir, exist_ok=True)
 
-    graph, sequences = get_graph_sequences(20, 6, 11, 20, 0)
+    graph, sequences = generation.get_graph_sequences()
     for n, p in nx.kamada_kawai_layout(graph).items():
         graph.nodes[n]['pos'] = p
     saving.save_design(graph, sequences, savedir, 'symbols')
