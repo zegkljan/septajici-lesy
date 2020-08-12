@@ -47,9 +47,8 @@ def save_design_nodes(graph: nx.DiGraph, savedir: str, symbols_dir: str):
         hl_y = 2 * dirs_btm_padding + dir_symbol_h
         canvas.line(0, hl_y, pg_w, hl_y)
 
-        symbol_fn = os.path.join(symbols_dir, '{:02d}.svg'.format(n))
+        symbol_fn = os.path.join(symbols_dir, f'SSL{n + 1:02d}.svg')
         symbol = fit_size(svglib.svg2rlg(symbol_fn), symbol_w, symbol_h)
-        symbol.getContents()[0].contents.pop()
         renderPDF.draw(symbol, canvas,
                        (pg_w - symbol_w) / 2, (pg_h + hl_y - symbol_h) / 2)
 
@@ -67,13 +66,12 @@ def save_design_nodes(graph: nx.DiGraph, savedir: str, symbols_dir: str):
             canvas.line(x, 0,
                         x, 2 * dirs_btm_padding + dir_symbol_h)
         for nb, nbd in graph[n].items():
-            symbol_fn = os.path.join(symbols_dir, '{:02d}.svg'.format(nb))
+            symbol_fn = os.path.join(symbols_dir, f'SSL{nb + 1:02d}.svg')
             o = nbd['order']
             x = (o + 0.5) * pg_w / nbnum - dir_symbol_w / 2
             y = dirs_btm_padding
             symbol = fit_size(svglib.svg2rlg(symbol_fn),
                               dir_symbol_w, dir_symbol_h)
-            symbol.getContents()[0].contents.pop()
             renderPDF.draw(symbol, canvas, x, y)
         canvas.showPage()
     canvas.save()
@@ -119,9 +117,8 @@ def save_design_cards(seqs: typing.List[Seq], savedir: str, symbols_dir: str,
         for j, e in enumerate(s):
             if e is None:
                 continue
-            symbol_fn = os.path.join(symbols_dir, '{:02d}.svg'.format(e))
+            symbol_fn = os.path.join(symbols_dir, f'SSL{e + 1:02d}.svg')
             symbol = fit_size(svglib.svg2rlg(symbol_fn), size, size)
-            symbol.getContents()[0].contents.pop()
             x = lr_pad + j * size
             y = (pg_h - size) / 2
             renderPDF.draw(symbol, canvas, x, y)
