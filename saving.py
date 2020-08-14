@@ -23,6 +23,7 @@ def fit_size(drawing, w, h):
 
 def save_design_graph(g: nx.DiGraph, savedir: str):
     plt.figure(0, figsize=(8, 8))
+    plt.clf()
     nx.draw_networkx(g, pos=dict(g.nodes('pos')))
     plt.savefig(os.path.join(savedir, 'graph.pdf'))
 
@@ -127,8 +128,8 @@ def save_design_cards(seqs: typing.List[Seq], savedir: str, symbols_dir: str,
 
 
 def save_design(graph: nx.DiGraph,
-                seqs: typing.List[typing.Tuple[Seq, SolvedSeq]], savedir: str,
-                symbols_dir: str):
+                seqs: typing.List[typing.Tuple[Seq, SolvedSeq]], savedir: str):
+    symbols_dir = os.path.join(os.path.dirname(__file__), 'symbols')
     save_design_graph(graph, savedir)
     save_design_nodes(graph, savedir, symbols_dir)
     save_design_cards([x[0] for x in seqs], savedir, symbols_dir, 'zadani',

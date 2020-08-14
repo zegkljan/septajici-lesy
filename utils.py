@@ -64,3 +64,23 @@ def length_n_path(graph: nx.DiGraph, start: int, end: int,
                 continue
             o.append(p + [n2])
     return path
+
+
+def save_sequences(sequences: typing.List[typing.Tuple[Seq, SolvedSeq]],
+                   fn: str):
+    with open(fn, 'w') as f:
+        for s, ss in sequences:
+            s_str = ','.join(['_' if e is None else str(e) for e in s])
+            ss_str = ','.join(map(str, ss))
+            f.write(f'{s_str}|{ss_str}\n')
+
+
+def read_sequences(fn: str) -> typing.List[typing.Tuple[Seq, SolvedSeq]]:
+    sequences = []
+    with open(fn) as f:
+        for l in f.readlines():
+            s_str, ss_str = l.split('|')
+            s = [None if e == '_' else int(e) for e in s_str.split(',')]
+            ss = [int(e) for e in ss_str.split(',')]
+            sequences.append((s, ss))
+    return sequences

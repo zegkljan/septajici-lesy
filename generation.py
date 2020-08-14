@@ -1,22 +1,40 @@
 import typing
+
+import matplotlib
 import networkx as nx
 import random
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils import Seq, SolvedSeq, NodeKind, seq2str
+from utils import Seq, SolvedSeq, NodeKind, seq2str, save_sequences
 
 
 T = typing.TypeVar('T')
 U = typing.TypeVar('U')
 
 
-class PathSetMetrics(typing.NamedTuple):
+class PathMetrics(typing.NamedTuple):
     nones_count: int
-    pairwise_dists: int
+    frac_nones_count: float
     min_none_sequence_len: int
+    max_none_sequence_len: int
     nones_spread: float
+    frac_nones_spread: float
+
+
+class PathSetMetrics(typing.NamedTuple):
+    # aggregated per-path metrics
+    sum_nones_count: int
+    min_nones_count: int
+    sum_frac_nones_count: float
+    min_min_none_sequence_len: int
+    sum_min_none_sequence_len: int
+    sum_nones_spread: float
+    sum_frac_nones_spread: float
+    # per-set metrics
+    min_dist: int
+    sum_dists: int
 
 
 def seq_distance(seq1: Seq, seq2: Seq) -> int:
@@ -69,48 +87,30 @@ def partition(c: typing.Collection[T], key: typing.Callable[[T], U]) ->\
     return partitions
 
 
-def generate_graph(size: int, seed: typing.Optional[int] = None) -> nx.DiGraph:
-    if seed is None:
-        seed = int(time.time())
-    random.seed(seed)
+def decorate_graph(g: nx.DiGraph):
+    # add meta info - node types, edge orderings
+    for n in g:
+        g.add_node(n, kind=NodeKind.PEEK_ALL)
+        for i, nn in enumerate(g[n]):
+            g.edges[(n, nn)]['order'] = i
 
-    # generate random graph
-    g = nx.fast_gnp_random_graph(size, 2.5 / (size - 1),
-                                 seed=seed, directed=True)
 
-    # postprocess graph
+def generate_graph(size: int, extra_edge_prob: float) -> nx.DiGraph:
+    # generate cyclic graph to ensure connectivity
+    g1 = nx.cycle_graph(size, nx.DiGraph)
+
+    # generate random graph for other connections
+    g2 = nx.fast_gnp_random_graph(size, extra_edge_prob,
+                                  seed=random.randint(0, 2**64), directed=True)
+
+    # combine both graphs
+    g = nx.compose(g1, g2)
 
     # remove self loops
     for n in g:
         if g.has_edge(n, n):
             g.remove_edge(n, n)
 
-    # strongly connect all components
-    comps = [list(c) for c in nx.strongly_connected_components(g)]
-    nc = len(comps)
-    while nc > 1:
-        c1 = random.randrange(len(comps))
-        c2 = random.randrange(len(comps))
-        while c2 == c1:
-            c2 = random.randrange(len(comps))
-        c1n1 = random.choice(comps[c1])
-        c1n2 = random.choice(comps[c1])
-        while len(comps[c1]) > 1 and c1n1 == c1n2:
-            c1n2 = random.choice(comps[c1])
-        c2n1 = random.choice(comps[c2])
-        c2n2 = random.choice(comps[c2])
-        while len(comps[c2]) > 1 and c2n1 == c2n2:
-            c2n2 = random.choice(comps[c2])
-        g.add_edge(c1n1, c2n1)
-        g.add_edge(c2n2, c1n2)
-        comps = [list(c) for c in nx.strongly_connected_components(g)]
-        nc = len(comps)
-
-    # add meta info - node types, edge orderings
-    for n in g:
-        g.add_node(n, kind=NodeKind.PEEK_ALL)
-        for i, nn in enumerate(g[n]):
-            g.edges[(n, nn)]['order'] = i
     return g
 
 
@@ -144,38 +144,102 @@ def blank_seqs(seqs: typing.Collection[SolvedSeq]) ->\
     return ret
 
 
+def filter_same_subsequences(seq: typing.Sequence[typing.Tuple[Seq,
+                                                               SolvedSeq]],
+                             min_k: int, max_k: int) ->\
+        typing.Sequence[typing.Tuple[Seq, SolvedSeq]]:
+    def find_nth_pre_blank_pos(s: Seq, n: int) -> int:
+        for i, e in enumerate(s):
+            if e is None:
+                if s[i - 1] is not None:
+                    if n == 0:
+                        return i - 1
+                    n -= 1
+        return -1
+
+    k = min_k
+    work = seq
+    filtered = []
+    while work and k <= max_k:
+        with_kth = [(s, find_nth_pre_blank_pos(s[0], k)) for s in work]
+        has_kth = partition(with_kth, key=lambda x: x[1] != -1)
+        filtered.extend([x for x, _ in has_kth.get(False, [])])
+        work = has_kth.get(True, [])
+        by_kth = partition(work, key=lambda x: x[0][0][x[1]])
+        work = []
+        for kth, sqs in by_kth.items():
+            work.append(max(sqs, key=lambda x: len(x[0][0]))[0])
+        k += 1
+
+    return filtered
+
+
 def select_paths(all_paths: typing.List[typing.Tuple[Seq, SolvedSeq]],
                  no: int) -> typing.List[typing.Tuple[Seq, SolvedSeq]]:
     return sorted(all_paths, key=lambda x: x[0].count(None))[-no:]
 
 
-def compute_metrics(seq_set: typing.List[typing.Tuple[Seq, SolvedSeq]]) ->\
-        PathSetMetrics:
-    nones_count = sum([seq.count(None) for seq, _ in seq_set])
-    pairwise_dists = sum([seq_distance(a, b)
-                          for _, a in seq_set for _, b in seq_set])
-    min_none_sequence_len = max(map(lambda x: len(x[0]), seq_set))
-    for s, _ in seq_set:
-        cnt = 0
-        for e in s:
-            if e is not None:
-                if cnt > 0:
-                    min_none_sequence_len = min(min_none_sequence_len, cnt)
-                cnt = 0
-            else:
-                cnt += 1
-    nones_spread = 0
-    for s, _ in seq_set:
-        l = len(s)
-        positions = []
-        for i, e in enumerate(s):
-            if e is None:
-                positions.append(i / l)
-        nones_spread += np.var(positions)
-    return PathSetMetrics(nones_count=nones_count,
-                          pairwise_dists=pairwise_dists,
-                          min_none_sequence_len=min_none_sequence_len,
-                          nones_spread=nones_spread)
+def compute_path_metrics(path: typing.Tuple[Seq, SolvedSeq]) -> PathMetrics:
+    nones_count = path[0].count(None)
+    frac_nones_count = nones_count / len(path[0])
+    min_none_sequence_len = len(path[0])
+    max_none_sequence_len = 0
+    cnt = 0
+    for e in path[0]:
+        if e is not None:
+            if cnt > 0:
+                min_none_sequence_len = min(min_none_sequence_len, cnt)
+                max_none_sequence_len = max(max_none_sequence_len, cnt)
+            cnt = 0
+        else:
+            cnt += 1
+    nones_spread = float(np.var([i for i, e in enumerate(path[0])
+                                 if e is None]))
+    frac_nones_spread = float(np.var([i / len(path[0])
+                                      for i, e in enumerate(path[0])
+                                      if e is None]))
+    return PathMetrics(nones_count=nones_count,
+                       frac_nones_count=frac_nones_count,
+                       min_none_sequence_len=min_none_sequence_len,
+                       max_none_sequence_len=max_none_sequence_len,
+                       nones_spread=nones_spread,
+                       frac_nones_spread=frac_nones_spread)
+
+
+def compute_path_set_metrics(
+        seq_set: typing.List[typing.Tuple[Seq, SolvedSeq]]) -> PathSetMetrics:
+    dists = [seq_distance(a, b)
+             for _, a in seq_set
+             for _, b in seq_set]
+    path_metrics = [compute_path_metrics(seq) for seq in seq_set]
+
+    sum_nones_count = sum([pm.nones_count for pm in path_metrics])
+    min_nones_count = min([pm.nones_count for pm in path_metrics])
+    sum_frac_nones_count = sum([pm.frac_nones_count for pm in path_metrics])
+    min_dist = min(dists)
+    sum_dists = sum(dists)
+    min_min_none_sequence_len = min([pm.min_none_sequence_len
+                                     for pm in path_metrics])
+    sum_min_none_sequence_len = sum([pm.min_none_sequence_len
+                                     for pm in path_metrics])
+    sum_nones_spread = sum([pm.nones_spread for pm in path_metrics])
+    sum_frac_nones_spread = sum([pm.frac_nones_spread for pm in path_metrics])
+    return PathSetMetrics(sum_nones_count=sum_nones_count,
+                          min_nones_count=min_nones_count,\
+                          sum_frac_nones_count=sum_frac_nones_count,
+                          min_min_none_sequence_len=min_min_none_sequence_len,
+                          sum_min_none_sequence_len=sum_min_none_sequence_len,
+                          sum_nones_spread=sum_nones_spread,
+                          sum_frac_nones_spread=sum_frac_nones_spread,
+                          min_dist=min_dist,
+                          sum_dists=sum_dists)
+
+
+def dominates(a, b, keys: typing.List[typing.Tuple[str, int]]) -> bool:
+    for k, f in keys:
+        if (getattr(a, k) - getattr(b, k)) * f < 0:
+            return False
+    return True
 
 
 def nd_sort(path_sets: typing.Iterable[
@@ -190,18 +254,20 @@ def nd_sort(path_sets: typing.Iterable[
                 ]
             ]
         ]:
-    path_sets_keys = [(s, compute_metrics(s)) for s in path_sets]
+    path_sets_keys = [(s, compute_path_set_metrics(s)) for s in path_sets]
     fronts = [[]]
-    path_sets_keys.sort(key=lambda x: (x[1].nones_spread, x[1].pairwise_dists),
+
+    keys = [('nones_spread', 1), ('sum_dists', 1)]
+    path_sets_keys.sort(key=lambda x: [getattr(x[1], k) * f for k, f in keys],
                         reverse=True)
+
     for p, pk in path_sets_keys:
         x = len(fronts)
         k = 0
         while True:
             dominated = False
             for pf, pfk in reversed(fronts[k]):
-                if (pfk.nones_spread >= pk.nones_spread and
-                        pfk.pairwise_dists >= pk.pairwise_dists):
+                if dominates(pfk, pk, keys):
                     dominated = True
                     break
             if not dominated:
@@ -225,7 +291,7 @@ def get_all_paths(g: nx.DiGraph, min_len: int, max_len: int) ->\
                 continue
             u = nodes[i]
             v = nodes[j]
-            paths = [p for p in nx.all_simple_paths(g, u, v, max_len)
+            paths = [p for p in nx.all_simple_paths(g, u, v, max_len - 1)
                      if len(p) >= min_len]
             all_paths.extend(paths)
     all_paths.sort()
@@ -233,10 +299,8 @@ def get_all_paths(g: nx.DiGraph, min_len: int, max_len: int) ->\
     return all_paths
 
 
-def find_sequences(g: nx.DiGraph, min_len: int, max_len: int, seqs_no: int) ->\
+def select_sequences(all_paths: typing.List[SolvedSeq], seqs_no: int) ->\
         typing.List[typing.Tuple[Seq, SolvedSeq]]:
-    max_len = min(len(g), max_len)
-    all_paths = get_all_paths(g, min_len, max_len)
     by_length = partition(all_paths, len)
     blanked = []
     for paths in by_length.values():
@@ -255,20 +319,99 @@ def find_sequences(g: nx.DiGraph, min_len: int, max_len: int, seqs_no: int) ->\
         paths.extend(paths2)
     by_endpoints_sorted = nd_sort(by_endpoints.values())
     first_front = by_endpoints_sorted[0]
-    first_front.sort(key=lambda x: x[1].pairwise_dists)
+    first_front.sort(key=lambda x: x[1].sum_dists)
     if len(first_front) >= 2:
         return first_front[-2][0]
     return first_front[0][0]
 
 
+def select_sequences_simple(
+        all_paths: typing.List[SolvedSeq], seqs_no: int,
+        min_blanks: int,
+        path_score_key_factor: typing.Sequence[typing.Tuple[str, float]],
+        path_set_score_key_factor: typing.Sequence[typing.Tuple[str, float]])\
+        -> typing.List[typing.Tuple[Seq, SolvedSeq]]:
+    tmp = dict(partition(all_paths, lambda e: (e[0], e[-1])))
+    by_endpoints = []
+    for endpoints, paths in tmp.items():
+        by_length = partition(paths, len)
+        blanked = []
+        for ps in by_length.values():
+            blanked.extend(blank_seqs(ps))
+        # discard paths with too few blanks
+        blanked[:] = [
+            s for s in blanked
+            if s[0].count(None) >= min_blanks
+        ]
+
+        if len(blanked) < seqs_no:
+            continue
+        with_metrics = [(p, compute_path_metrics(p)) for p in blanked]
+        with_metrics.sort(key=lambda x: sum([getattr(x[1], m) * f
+                                             for m, f
+                                             in path_score_key_factor]),
+                          reverse=True)
+        del with_metrics[seqs_no:]
+        by_endpoints.append([x[0] for x in with_metrics])
+    by_endpoints.sort(
+        key=lambda x: sum([getattr(compute_path_set_metrics(x), m) * f
+                           for m, f in path_set_score_key_factor]),
+        reverse=True)
+    if by_endpoints:
+        return by_endpoints[0]
+    return []
+
+
+def reduce_blanks(sqs: typing.List[typing.Tuple[Seq, SolvedSeq]],
+                  no_blanks: int):
+    max_reduced = 0
+    min_reduced = float('inf')
+    for s, ss in sqs:
+        none_idx = [i for i, e in enumerate(s) if e is None]
+        unblanked_idx = random.sample(none_idx, len(none_idx) - no_blanks)
+        max_reduced = max(max_reduced, len(unblanked_idx))
+        min_reduced = min(min_reduced, len(unblanked_idx))
+        for i in unblanked_idx:
+            s[i] = ss[i]
+    print(f'Max reduction: {max_reduced}')
+    print(f'Min reduction: {min_reduced}')
+
+
 def generate_graph_sequences_1(graph_size: int, seq_min_len: int,
-                               seq_max_len: int, no_of_sequences: int,
-                               seed: typing.Optional[int] = None) ->\
+                               seq_max_len: int, no_blanks: int,
+                               no_of_sequences: int) ->\
         typing.Tuple[nx.DiGraph, typing.List[typing.Tuple[Seq, SolvedSeq]]]:
-    print('Generating graph')
-    g = generate_graph(graph_size, seed)
-    print('Finding sequences')
-    seqs = find_sequences(g, seq_min_len, seq_max_len, no_of_sequences)
+    seqs = []
+    freq_base = 0.5
+    freq_factor = 1.01
+    max_freq_base = 2
+    max_max_freq_base = graph_size - 1
+    while not seqs:
+        print(f'Generating graph ({graph_size}): {freq_base} {freq_factor} '
+              f'{max_freq_base} {max_max_freq_base}')
+        g = generate_graph(graph_size, freq_base / (graph_size - 1))
+        print(f'Getting all paths of length {seq_min_len} to {seq_max_len}')
+        all_paths = get_all_paths(g, seq_min_len, seq_max_len)
+        print(f'{len(all_paths)} paths')
+        print('Finding sequences')
+        # seqs = select_sequences(all_paths, no_of_sequences)
+        seqs = select_sequences_simple(
+            all_paths, no_of_sequences,
+            min_blanks=no_blanks,
+            path_score_key_factor=[('nones_count', 0), ('nones_spread', 1)],
+            path_set_score_key_factor=[('min_dist', 1),
+                                       ('sum_nones_spread', 0.1),
+                                       ('min_nones_count', 0)])
+        if seqs:
+            reduce_blanks(seqs, no_blanks)
+        freq_base = min(freq_base * freq_factor, max_freq_base)
+        freq_factor *= 1.005
+        if freq_base == max_freq_base:
+            freq_base = 0.5
+            freq_factor = 1.01
+            max_freq_base = min(max_freq_base * freq_factor, max_max_freq_base)
+            if max_freq_base == max_max_freq_base:
+                raise ValueError('could not generate')
     print('Done')
     return g, seqs
 
@@ -277,21 +420,61 @@ def generate_graph_sequences_2(graph_size: int, seq_min_len: int,
                                seq_max_len: int,
                                seed: typing.Optional[int] = None) ->\
         typing.Tuple[nx.DiGraph, typing.List[typing.Tuple[Seq, SolvedSeq]]]:
+    if seed is None:
+        seed = int(time.time())
+    random.seed(seed)
+
+    matplotlib.use('TkAgg')
+    plt.ion()
+
     print('Generating graph')
     g: nx.DiGraph = nx.cycle_graph(range(graph_size), nx.DiGraph)
-    paths = get_all_paths(g, seq_min_len, seq_max_len)
+    first = True
+    while True:
+        if not first:
+            # select nodes with maximum out deg - in deg and in deg - out deg
+            out = float('inf')
+            min_out = []
+            for n in g:
+                v = g.out_degree(n)
+                if v < out:
+                    min_out = [n]
+                    out = v
+                elif v == out:
+                    min_out.append(n)
+
+            out_n = random.choice(min_out)
+            target = random.choice(
+                [n for n in g if n != out_n and (out_n, n) not in g.edges])
+            print(out_n, target)
+            g.add_edge(out_n, target)
+        first = False
+
+        for n, p in nx.kamada_kawai_layout(g).items():
+            g.nodes[n]['pos'] = p
+
+        all_paths = get_all_paths(g, seq_min_len, seq_max_len)
+        sqs = select_sequences(all_paths, 20)
+
+        draw(g, sqs)
+        plt.show()
+        plt.waitforbuttonpress()
     return g, [(x, None) for x in paths]
 
 
-def get_graph_sequences(seed: int = 0) ->\
+def get_graph_sequences() ->\
         typing.Tuple[nx.DiGraph, typing.List[typing.Tuple[Seq, SolvedSeq]]]:
-    return generate_graph_sequences_1(20, 6, 11, 20, seed)
+    return generate_graph_sequences_1(30, 17, 17, 13, 20)
     # return generate_graph_sequences_2(10, 4, 6, seed)
 
 
-def draw(g: nx.DiGraph, sqs: typing.List[typing.Tuple[Seq, SolvedSeq]]):
-    plt.figure(0)
+def draw(g: nx.DiGraph, sqs: typing.List[typing.Tuple[Seq, SolvedSeq]],
+         title: str = ''):
+    plt.figure(0, figsize=(10, 5))
     plt.clf()
+    if title:
+        plt.suptitle(title)
+
     plt.subplot(1, 2, 1)
     nx.draw_networkx(g, pos=dict(g.nodes('pos')))
     plt.subplot(1, 2, 2)
@@ -301,17 +484,25 @@ def draw(g: nx.DiGraph, sqs: typing.List[typing.Tuple[Seq, SolvedSeq]]):
                  fontfamily='monospace')
     plt.ylim((0, 1))
     plt.axis('off')
-    plt.show(block=True)
 
 
 def main():
+    seed = 0  # int(time.time())
+    random.seed(seed)
+    k = 0
     while True:
-        seed = int(time.time())
-        g, sqs = get_graph_sequences(seed)
+        #g, sqs = generate_graph_sequences_2(20, 8, 8, seed)
+        g, sqs = get_graph_sequences()
+        nx.write_graphml_xml(g, '/tmp/graph')
+        save_sequences(sqs, '/tmp/sequences')
         for n, p in nx.kamada_kawai_layout(g).items():
             g.nodes[n]['pos'] = p
-        draw(g, sqs)
-        input('next')
+        draw(g, sqs, f'seed: {seed} k: {k} out deg: '
+                     f'{min([deg for _, deg in g.out_degree])} | '
+                     f'{sum([deg for _, deg in g.out_degree]) / len(g)} | '
+                     f'{max([deg for _, deg in g.out_degree])}')
+        plt.show()
+        k += 1
 
 
 if __name__ == '__main__':

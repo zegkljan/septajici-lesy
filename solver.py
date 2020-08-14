@@ -5,6 +5,7 @@ import logging
 import logging.config
 import multiprocessing
 import os
+import sys
 import typing
 
 import matplotlib.pyplot as plt
@@ -14,7 +15,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import saving
 import generation
 from utils import (Seq, shortest_path, length_n_path,
-                   SolvedSeq, NodeKind, seq2str)
+                   SolvedSeq, NodeKind, seq2str, read_sequences)
 
 
 def split_seq(seq: Seq) -> typing.List[Seq]:
@@ -604,23 +605,33 @@ def solve(graph: nx.DiGraph, i: int, seq: Seq, correct: SolvedSeq,
 
 
 def main():
-    savedir = '/tmp/lesy'
-    os.makedirs(savedir, exist_ok=True)
+    for d in sys.argv[1:]:
+        logging.warning(f'Processing directory {d}.')
+        graph = nx.read_graphml(os.path.join(d, 'graph'), node_type=int)
+        sequences = read_sequences(os.path.join(d, 'sequences'))
+        for n, p in nx.kamada_kawai_layout(graph).items():
+            graph.nodes[n]['pos'] = p
+        generation.decorate_graph(graph)
 
-    graph, sequences = generation.get_graph_sequences()
-    for n, p in nx.kamada_kawai_layout(graph).items():
-        graph.nodes[n]['pos'] = p
-    saving.save_design(graph, sequences, savedir, 'symbols')
-    mp = True
-    if mp:
-        with multiprocessing.Pool() as pool:
-            res = [pool.apply_async(solve, [graph, i, seq, correct, savedir])
-                   for i, (seq, correct) in enumerate(sequences)]
-            for r in res:
-                r.wait()
-    else:
-        for i, (seq, correct) in enumerate(sequences):
-            solve(graph, i, seq, correct, savedir)
+        design_dir = os.path.join(d, 'design')
+        sim_dir = os.path.join(d, 'simulations')
+        os.makedirs(design_dir, exist_ok=True)
+
+        saving.save_design(graph, sequences, design_dir)
+        continue
+
+        os.makedirs(sim_dir, exist_ok=True)
+        mp = True
+        if mp:
+            with multiprocessing.Pool() as pool:
+                res = [pool.apply_async(solve,
+                                        [graph, i, seq, correct, sim_dir])
+                       for i, (seq, correct) in enumerate(sequences)]
+                for r in res:
+                    r.wait()
+        else:
+            for i, (seq, correct) in enumerate(sequences):
+                solve(graph, i, seq, correct, sim_dir)
 
 
 if __name__ == '__main__':
